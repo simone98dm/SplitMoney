@@ -3,18 +3,31 @@ import { defineStore, storeToRefs } from "pinia";
 import type { Expense, Transfer } from "~/types";
 import { useParticipantsStore } from "~/store/participant";
 import type { ParticipantRename } from "~/store/participant";
-import { calculateBalancesInCents } from "~/store/balance";
-import { settleDebts } from "~/store/settlement";
-import { toCents, toEuro } from "~/store/money";
+import { computeLedger, isPayment } from "~/store/split";
+import {
+  MAX_EXPENSE_AMOUNT,
+  formatEuro,
+  parseEuroInput,
+  toCents,
+  toEuro,
+} from "~/store/money";
 import { readStored, writeStored } from "~/store/storage";
 
 const STORAGE_KEY = "expenses";
-const MAX_EXPENSE_AMOUNT = 1_000_000;
 
 // Date.now() alone collides when two expenses land in the same millisecond;
 // the counter disambiguates within a session, the timestamp across sessions.
 let expenseSequence = 0;
 const nextExpenseId = (): string => `${Date.now()}-${++expenseSequence}`;
+
+/** What the undo toast offers back: the list exactly as it was before. */
+export interface UndoableAction {
+  id: number;
+  message: string;
+  previous: Expense[];
+}
+
+let actionSequence = 0;
 
 const getErrorMessage = (error: unknown): string =>
   error instanceof Error ? error.message : "Errore di calcolo imprevisto";
@@ -35,7 +48,18 @@ const isValidExpense = (value: unknown): value is Expense => {
     // a duplicate inside the snapshot would charge that person two shares
     new Set(participants).size === participants.length;
 
+  const kind = candidate.kind;
+  const hasValidKind =
+    kind === undefined ||
+    kind === "expense" ||
+    // a payment goes to exactly one other person
+    (kind === "payment" &&
+      Array.isArray(participants) &&
+      participants.length === 1 &&
+      participants[0] !== candidate.payer);
+
   return (
+    hasValidKind &&
     typeof candidate.id === "string" &&
     candidate.id !== "" &&
     typeof candidate.payer === "string" &&
@@ -64,7 +88,7 @@ const parseExpenses = (raw: unknown): Expense[] | null => {
 
 export const useExpenseSplitterStore = defineStore("expenseSplitter", () => {
   const participantsStore = useParticipantsStore();
-  const { participants } = storeToRefs(participantsStore);
+  const { participants, me } = storeToRefs(participantsStore);
 
   const expenses = ref<Expense[]>(readStored(STORAGE_KEY, parseExpenses, []));
   const expenseError = ref("");
@@ -83,8 +107,36 @@ export const useExpenseSplitterStore = defineStore("expenseSplitter", () => {
     { deep: true }
   );
 
+  const lastAction = ref<UndoableAction | null>(null);
+
+  /** Swaps in a new list and remembers the old one so the toast can undo it. */
+  const commit = (next: Expense[], message: string) => {
+    lastAction.value = { id: ++actionSequence, message, previous: expenses.value };
+    expenses.value = next;
+  };
+
+  const undoLastAction = () => {
+    if (!lastAction.value) return;
+    expenses.value = lastAction.value.previous;
+    lastAction.value = null;
+  };
+
+  const dismissLastAction = () => {
+    lastAction.value = null;
+  };
+
+  // whoever paid last usually pays the next round too; otherwise the person
+  // holding the phone, who is the one most likely typing their own receipt
+  let lastPayer = "";
+  const defaultPayer = (): string => {
+    const roster = participants.value;
+    if (roster.includes(lastPayer)) return lastPayer;
+    if (me.value && roster.includes(me.value)) return me.value;
+    return roster[0] ?? "";
+  };
+
   const buildEmptyExpense = () => ({
-    payer: participants.value[0] ?? "",
+    payer: defaultPayer(),
     amount: "",
     description: "",
   });
@@ -100,17 +152,21 @@ export const useExpenseSplitterStore = defineStore("expenseSplitter", () => {
     participants,
     (roster) => {
       if (!roster.includes(newExpense.value.payer)) {
-        newExpense.value = { ...newExpense.value, payer: roster[0] ?? "" };
+        newExpense.value = { ...newExpense.value, payer: defaultPayer() };
       }
     },
     // deep: also catch an in-place push from a future caller, not just a reassign
     { deep: true }
   );
 
-  const hasExpenses = computed(() => expenses.value.length > 0);
+  // payments move money between people; they are not spending
+  const spending = computed(() =>
+    expenses.value.filter((expense) => !isPayment(expense))
+  );
+  const hasExpenses = computed(() => spending.value.length > 0);
   const totalExpenses = computed(() =>
     toEuro(
-      expenses.value.reduce((sum, expense) => sum + toCents(expense.amount), 0)
+      spending.value.reduce((sum, expense) => sum + toCents(expense.amount), 0)
     )
   );
 
@@ -128,14 +184,7 @@ export const useExpenseSplitterStore = defineStore("expenseSplitter", () => {
     error: string;
   }>(() => {
     try {
-      const cents = calculateBalancesInCents(expenses.value, participants.value);
-      return {
-        balances: Object.fromEntries(
-          Object.entries(cents).map(([person, value]) => [person, toEuro(value)])
-        ),
-        transfers: settleDebts(cents),
-        error: "",
-      };
+      return { ...computeLedger(expenses.value, participants.value), error: "" };
     } catch (error: unknown) {
       return { balances: {}, transfers: [], error: getErrorMessage(error) };
     }
@@ -144,23 +193,21 @@ export const useExpenseSplitterStore = defineStore("expenseSplitter", () => {
   const balances = computed(() => ledger.value.balances);
   const settlements = computed(() => ledger.value.transfers);
   const settlementError = computed(() => ledger.value.error);
-
-  const parseAmount = (raw: string): number | null => {
-    // Number() rather than parseFloat(): "50abc" must be rejected, not read as 50
-    const amount = Number(raw);
-    if (!Number.isFinite(amount)) return null;
-    if (amount <= 0 || amount > MAX_EXPENSE_AMOUNT) return null;
-    return amount;
-  };
+  /** The event is over: something was spent and nobody owes anything. */
+  const isFinished = computed(
+    () =>
+      hasExpenses.value &&
+      settlements.value.length === 0 &&
+      !settlementError.value
+  );
 
   const addExpense = (): boolean => {
-    const amount = parseAmount(String(newExpense.value.amount));
-    if (amount === null) {
-      expenseError.value = `Inserisci un importo tra 0,01 e ${MAX_EXPENSE_AMOUNT.toLocaleString(
-        "it-IT"
-      )}€`;
+    const parsed = parseEuroInput(String(newExpense.value.amount));
+    if ("error" in parsed) {
+      expenseError.value = parsed.error;
       return false;
     }
+    const { amount } = parsed;
 
     const payer = newExpense.value.payer;
     const splitAmong = [...participants.value];
@@ -169,25 +216,70 @@ export const useExpenseSplitterStore = defineStore("expenseSplitter", () => {
       return false;
     }
 
-    expenses.value = [
-      ...expenses.value,
-      {
-        id: nextExpenseId(),
-        payer,
-        amount,
-        description: newExpense.value.description.trim(),
-        participants: splitAmong,
-        timestamp: Date.now(),
-      },
-    ];
+    const description = newExpense.value.description.trim();
+    commit(
+      [
+        ...expenses.value,
+        {
+          id: nextExpenseId(),
+          kind: "expense",
+          payer,
+          amount,
+          description,
+          participants: splitAmong,
+          timestamp: Date.now(),
+        },
+      ],
+      `Spesa aggiunta: ${description ? `${description}, ` : ""}${formatEuro(amount)}, pagata da ${payer}`
+    );
 
+    lastPayer = payer;
     newExpense.value = buildEmptyExpense();
     expenseError.value = "";
     return true;
   };
 
   const removeExpense = (id: string) => {
-    expenses.value = expenses.value.filter((expense) => expense.id !== id);
+    const removed = expenses.value.find((expense) => expense.id === id);
+    if (!removed) return;
+    commit(
+      expenses.value.filter((expense) => expense.id !== id),
+      isPayment(removed)
+        ? `Pagamento tolto: ${removed.payer} → ${removed.participants[0]}`
+        : `Spesa eliminata: ${removed.description ? `${removed.description}, ` : ""}${formatEuro(removed.amount)}`
+    );
+  };
+
+  /** Records that a suggested transfer actually happened. */
+  const recordPayment = (transfer: Transfer) => {
+    commit(
+      [
+        ...expenses.value,
+        {
+          id: nextExpenseId(),
+          kind: "payment",
+          payer: transfer.from,
+          amount: transfer.exactAmount,
+          description: "",
+          participants: [transfer.to],
+          timestamp: Date.now(),
+        },
+      ],
+      `Fatto: ${transfer.from} ha dato ${formatEuro(transfer.amount)} a ${transfer.to}`
+    );
+  };
+
+  /**
+   * Ends the event. Behind a confirm in the UI, so no undo: "da zero" also
+   * clears the roster, which lives in the other store.
+   */
+  const startNewEvent = ({ keepPeople }: { keepPeople: boolean }) => {
+    expenses.value = [];
+    lastAction.value = null;
+    lastPayer = "";
+    if (!keepPeople) participantsStore.resetRoster();
+    newExpense.value = buildEmptyExpense();
+    expenseError.value = "";
   };
 
   /**
@@ -228,8 +320,14 @@ export const useExpenseSplitterStore = defineStore("expenseSplitter", () => {
     balances,
     settlements,
     settlementError,
+    isFinished,
     addExpense,
     removeExpense,
+    recordPayment,
+    startNewEvent,
+    lastAction,
+    undoLastAction,
+    dismissLastAction,
     commitRename,
   };
 });

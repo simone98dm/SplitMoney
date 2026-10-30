@@ -21,9 +21,11 @@ export default <Partial<Config>>{
         danger: "var(--danger)",
       },
       fontFamily: {
-        // no webfont: the app is installable and must render offline instantly
+        // self-hosted by @nuxt/fonts. A blunt grotesk whose tabular figures
+        // keep a narrow comma: "50,33" must not read as "50 , 33" at display
+        // size, which ruled out faces with digit-wide punctuation.
         sans: [
-          "Inter",
+          "Familjen Grotesk",
           "-apple-system",
           "BlinkMacSystemFont",
           "Segoe UI",

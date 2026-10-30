@@ -6,6 +6,8 @@ export default defineNuxtConfig({
   // cssPath, not the `css` array: the array would load this file *alongside*
   // the module's default one and emit the @tailwind directives twice
   tailwindcss: { cssPath: "~/assets/css/main.css" },
+  // @nuxt/fonts comes from the layer; only the weights the type ramp uses
+  fonts: { defaults: { weights: [400, 500, 600] } },
   app: {
     head: {
       title: "SplitMoney",

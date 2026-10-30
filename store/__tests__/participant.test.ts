@@ -19,13 +19,9 @@ describe("Participants Store", () => {
   });
 
   describe("Loading", () => {
-    it("falls back to the defaults when storage holds garbage", () => {
+    it("starts with an empty roster when storage holds garbage", () => {
       localStorage.setItem("participants", "{not json");
-      expect(useParticipantsStore().participants).toEqual([
-        "Simone",
-        "Gennaro",
-        "Michele",
-      ]);
+      expect(useParticipantsStore().participants).toEqual([]);
     });
 
     it("drops non-string entries from storage", () => {
@@ -105,7 +101,7 @@ describe("Participants Store", () => {
       });
     });
 
-    it("net balances sum to zero across everyone involved", () => {
+    it("net balances sum to zero across everyone involved, within rounding", () => {
       const store = useParticipantsStore();
       const roster = ["A", "B", "C"];
       const expenses = [expense("A", 10, roster), expense("B", 7.77, roster)];
@@ -119,7 +115,8 @@ describe("Participants Store", () => {
         0
       );
 
-      expect(total).toBe(0);
+      // shares are unrounded fractions; each displayed net is rounded to the cent
+      expect(Math.abs(total)).toBeLessThanOrEqual(roster.length - 1);
     });
   });
 });

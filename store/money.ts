@@ -32,41 +32,33 @@ export const formatSignedEuro = (amount: number): string => {
   return `${sign}${EURO.format(Math.abs(amount))}`;
 };
 
+export const MAX_EXPENSE_AMOUNT = 1_000_000;
+
+// "1.250,50" and "1.250": dots that group thousands, Italian style
+const ITALIAN_THOUSANDS = /^\d{1,3}(\.\d{3})+(,\d+)?$/;
+
 /**
- * Splits `totalCents` into `shareCount` shares that sum back to EXACTLY
- * `totalCents`. The indivisible remainder is spread one cent at a time, so no
- * cent is ever created or destroyed.
- *
- * `offset` picks who absorbs those extra cents. Always starting at index 0
- * would make whoever sits first in the list pay the extra cent on every single
- * expense, which adds up; callers pass a per-expense offset to rotate it.
- *
- * splitEvenly(1000, 3) -> [334, 333, 333]
- * splitEvenly(1000, 3, 1) -> [333, 334, 333]
+ * Reads an amount the way an Italian types it ("12,50", "1.250,50", "12.5")
+ * and says exactly what is wrong when it can't. Number() rather than
+ * parseFloat(): "50abc" must be rejected, not read as 50.
  */
-export const splitEvenly = (
-  totalCents: number,
-  shareCount: number,
-  offset = 0
-): number[] => {
-  if (!Number.isInteger(totalCents)) {
-    throw new Error(
-      `splitEvenly richiede centesimi interi, ricevuto ${totalCents}`
-    );
+export const parseEuroInput = (
+  raw: string
+): { amount: number } | { error: string } => {
+  const text = raw.trim().replace(/\s|€/g, "");
+  if (text === "") return { error: "Scrivi quanto è costato." };
+
+  const normalized = ITALIAN_THOUSANDS.test(text)
+    ? text.replace(/\./g, "").replace(",", ".")
+    : text.replace(",", ".");
+  const amount = Number(normalized);
+
+  if (!Number.isFinite(amount)) {
+    return { error: "Scrivi solo cifre, per esempio 12,50." };
   }
-
-  if (shareCount <= 0) return [];
-
-  const base = Math.trunc(totalCents / shareCount);
-  const remainder = totalCents - base * shareCount;
-  // remainder keeps the sign of totalCents, so negative totals split correctly
-  const step = remainder >= 0 ? 1 : -1;
-  const extraShares = Math.abs(remainder);
-  const start = ((offset % shareCount) + shareCount) % shareCount;
-
-  const shares = new Array<number>(shareCount).fill(base);
-  for (let i = 0; i < extraShares; i++) {
-    shares[(start + i) % shareCount] += step;
+  if (amount <= 0) return { error: "L'importo deve essere più di 0." };
+  if (amount > MAX_EXPENSE_AMOUNT) {
+    return { error: `L'importo massimo è ${formatEuro(MAX_EXPENSE_AMOUNT)}.` };
   }
-  return shares;
+  return { amount };
 };

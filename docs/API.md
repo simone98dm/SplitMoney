@@ -20,43 +20,23 @@ Italian formatting, always two decimals: `1.234,50 €`. The signed variant
 prefixes `+` or `−` (U+2212, which aligns with the digits). Prefer
 `MoneyFigure` in components; use these directly only for prose.
 
-##### `splitEvenly(totalCents: number, shareCount: number, offset?: number): number[]`
+### `store/split.ts`
 
-Splits a total into shares summing to **exactly** `totalCents`. The indivisible
-remainder is handed out one cent at a time, starting at `offset` so the same
-person is not charged the extra cent on every expense.
+Bridge to the split engine (`lib/split-engine/`). See [ALGORITHMS.md](ALGORITHMS.md).
 
-```typescript
-splitEvenly(1000, 3); // [334, 333, 333]
-splitEvenly(1000, 3, 1); // [333, 334, 333]
-```
+##### `computeLedger(expenses: Expense[], roster: string[]): { balances, transfers }`
 
-Throws if `totalCents` is not an integer.
+Balances (positive = must receive) and the fewest payments that settle them,
+both rounded to the cent. `roster` only seeds who is displayed at zero.
+**Throws** `GroupValidationError` on an invalid ledger.
 
-### `store/balance.ts`
+##### `shareOf(expense: Expense, person: string): number`
 
-##### `sharesForExpense(expense: Expense): number[]`
+What `person` consumed of one expense, unrounded.
 
-Per-person share of one expense in cents, aligned with `expense.participants`.
-Single source of truth — balances, settlement and stats all go through it.
-Throws if the expense has no participants.
+##### `toEntry(expense)` / `toGroup(expenses, roster)`
 
-##### `calculateBalancesInCents(expenses: Expense[], roster: string[]): Record<string, number>`
-
-Net position of everyone involved, in integer cents. Positive = must receive.
-**Always sums to exactly zero.**
-
-`roster` only seeds who is displayed at zero; anyone who paid for or took part
-in an expense is included even if they were since removed from the roster.
-
-##### `calculateBalances(expenses: Expense[], roster: string[]): Record<string, number>`
-
-Same thing in euros.
-
-```typescript
-calculateBalances(expenses, ["Alice", "Bob", "Charlie"]);
-// { Alice: 30, Bob: 0, Charlie: -30 }
-```
+Map app expenses onto the engine's `Entry` / `Group` shapes.
 
 ### `store/storage.ts`
 
@@ -78,17 +58,6 @@ storage disabled).
 
 Keeps only the non-empty strings, without duplicates — a duplicated name would
 be charged two shares of every expense.
-
-### `store/settlement.ts`
-
-##### `settleDebts(balancesInCents: Record<string, number>): Transfer[]`
-
-Turns a balance sheet into the payment plan that clears it. Two passes: exact
-pairing, then greedy largest-against-largest. See
-[ALGORITHMS.md](ALGORITHMS.md).
-
-**Throws** if the sheet does not sum to zero or contains fractional cents —
-a wrong plan is worse than no plan.
 
 ---
 

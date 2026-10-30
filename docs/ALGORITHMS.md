@@ -3,204 +3,92 @@
 How SplitMoney turns a list of expenses into the shortest list of payments
 that clears every debt.
 
-- [Money representation](#money-representation)
+All of it lives in the **split engine** (`lib/split-engine/`). `store/split.ts` is the only
+bridge: it turns `Expense` records into engine entries and rounds the results
+to cents for display.
+
+- [Expense mapping](#expense-mapping)
 - [Balance calculation](#balance-calculation)
 - [Settlement](#settlement)
+- [Rounding](#rounding)
 - [Edge cases](#edge-cases)
-- [Complexity](#complexity)
-- [Worked examples](#worked-examples)
 
-## Money representation
-
-**All arithmetic happens in integer cents.** Euros only appear at the UI
-boundary.
+## Expense mapping
 
 ```typescript
-// store/money.ts
-toCents(10) // 1000
-toEuro(1000) // 10
+// store/split.ts
+toEntry(expense): Entry
+toGroup(expenses, roster): Group
 ```
 
-This is not a style preference. Splitting €10 three ways in floating point
-gives `3.3333…` per person. Rounding each balance on its own produces
-`+6.67 / -3.33 / -3.33`, which sums to `+0.01` — a balance sheet that does not
-add up, and a payment plan that leaves one cent permanently unpaid.
+Each expense becomes one engine entry with a single item, paid by
+`expense.payer` and split equally (`splitEqually`) over
+`expense.participants`.
 
-`splitEvenly` divides a total into shares that sum back to **exactly** the
-total. The indivisible remainder is handed out one cent at a time:
-
-```typescript
-splitEvenly(1000, 3) // [334, 333, 333]  -> sums to 1000
-splitEvenly(1000, 3, 1) // [333, 334, 333]  -> offset rotates who pays it
-```
-
-The third argument matters over time: always starting at index 0 would charge
-the extra cent to whoever sits first in the list on *every* expense. Callers
-pass the expense timestamp so the burden rotates.
-
-## Balance calculation
-
-```typescript
-// store/balance.ts
-calculateBalancesInCents(expenses, roster): Record<string, number>
-```
-
-Positive = must receive. Negative = must pay. **The result always sums to
-exactly zero.**
-
-For every expense:
-
-1. split the total over `expense.participants` with `sharesForExpense`
-2. debit each participant their share
-3. credit the payer the full amount
-
-Two properties are worth spelling out:
+**Recorded payments.** Tapping "Fatto" on a suggested transfer stores an
+`Expense` with `kind: "payment"`: the engine's payment entry, whose only
+beneficiary is the receiver. It stores the transfer's unrounded
+`exactAmount`, so marking every transfer done lands all balances on exactly
+zero; rounded amounts would leave crumbs that spawn new one-cent transfers.
+Payments are excluded from the spending totals.
 
 **Each expense carries its own participant list.** `expense.participants` is a
 snapshot frozen when the expense is created. Adding somebody to the group
 tomorrow must not retroactively re-split yesterday's dinner.
 
 **Nobody is dropped.** `roster` only seeds who is displayed at zero. Anyone who
-paid for or took part in an expense stays in the balance sheet even after being
-removed from the roster — otherwise their money would silently vanish.
+paid for or took part in an expense stays in the group even after being removed
+from the roster — otherwise their money would silently vanish.
+
+## Balance calculation
+
+`calculateBalances(group)` (`lib/split-engine/logic/balance-calculator.ts`).
+For every entry the payer is credited the total, and every beneficiary is
+debited `fraction × amount`. Positive = must receive, negative = must pay.
+
+Shares are **unrounded fractions**: €10 among three is `3.333…` each.
 
 ## Settlement
 
-```typescript
-// store/settlement.ts
-settleDebts(balancesInCents): Transfer[]
-```
+`suggestPayments(group)` (`lib/split-engine/logic/settle-up.ts`):
 
-### This problem has no cheap exact solution
+1. validates the group (`validateGroup`): known people, positive amounts,
+   fractions summing to 1;
+2. computes balances;
+3. runs `minimizePayments`: a depth-first branch-and-bound search over every
+   debtor → creditor transfer of `min(|debt|, credit)`, keeping the shortest
+   plan. Branches are pruned when they cannot beat the best plan so far; the
+   search stops after 40 000 iterations or ~2 s and returns the best plan
+   found. Balances under 0.001 count as settled;
+4. drops payments that round to 0 at two decimals.
 
-Minimising the number of transfers is **NP-hard**. It reduces to subset-sum:
-the minimum is `n - k`, where `k` is the largest number of disjoint groups the
-participants can be split into such that each group's balances sum to zero, and
-finding `k` requires exponential search.
+People are visited sorted by name, so the plan is deterministic.
 
-So this is a heuristic, in two passes.
+## Rounding
 
-### Pass 1 — exact pairing
-
-A debtor and a creditor owing the identical amount clear each other in a single
-transfer. Plain largest-first greedy walks straight past these and fragments
-them.
-
-### Pass 2 — greedy largest against largest
-
-Sort what is left, match the biggest debt against the biggest credit, subtract,
-advance whichever hit zero. Integer cents hit zero exactly, so there is no
-epsilon threshold that could strand a sub-cent remainder.
-
-### How good is it
-
-Measured against a brute-force optimum (bitmask DP) over 15,601 random balance
-sheets of 3–8 people:
-
-| | avg transfers | sub-optimal |
-|---|---|---|
-| brute-force optimum | 3.81 | — |
-| two-pass (current) | 3.90 | **8.70%** |
-| plain greedy (previous) | 4.11 | 27.13% |
-
-The two-pass version was never worse than plain greedy in any of those trials.
-
-Exhaustive branch-and-bound only starts paying off past roughly 15 people — add
-it then, not before.
+The engine works in floating point. `computeLedger` rounds each transfer to
+the cent, then **derives every displayed balance from those rounded
+transfers** (in whole cents) instead of rounding the engine's balances on
+their own. Rounded independently, €10 among three gave `+6.67` next to two
+transfers of `3.33`; derived, it gives `+6.66 / −3.33 / −3.33`. The header,
+the rows and the plan always agree, and the balance sheet sums to exactly
+zero.
 
 ## Edge cases
 
-| Case | Handling |
-|---|---|
-| Zero balance | Excluded from transfers, neither debtor nor creditor |
-| Amount that does not divide evenly | Remainder distributed by `splitEvenly`; the sheet still sums to zero |
-| Sub-cent debts | Cannot exist — everything is integer cents |
-| Payer removed from the roster | Kept in the balance sheet, still owed their money |
-| Participant renamed | Applied to the roster *and* to every expense snapshot |
-| Participant with an open balance | Cannot be removed from the UI |
-| No expenses | Balances are all zero, no transfers |
-| Corrupted `localStorage` | Malformed expenses are dropped on load, not fed into the ledger |
-| Balance sheet not summing to zero | `settleDebts` throws; the store surfaces it as `settlementError` instead of rendering a wrong plan |
-
-## Complexity
-
-| Step | Time | Space |
-|---|---|---|
-| Balance calculation | O(n × m) | O(m) |
-| Exact pairing | O(m) | O(m) |
-| Greedy matching | O(m log m) | O(m) |
-
-`n` = expenses, `m` = participants. Sorting dominates.
+| Case                               | Handling                                                                                             |
+| ---------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| Zero balance                       | Settled, no transfer                                                                                 |
+| Amount that does not divide evenly | Split in exact fractions; displayed balances derived from the rounded transfers                      |
+| Payer removed from the roster      | Kept in the group, still owed their money                                                            |
+| Participant renamed                | Applied to the roster _and_ to every expense snapshot                                                |
+| Participant with an open balance   | Cannot be removed from the UI                                                                        |
+| No expenses                        | Balances are all zero, no transfers                                                                  |
+| Corrupted `localStorage`           | Malformed expenses are dropped on load, not fed into the engine                                      |
+| Invalid group                      | `validateGroup` throws; the store surfaces it as `settlementError` instead of rendering a wrong plan |
 
 Everything is derived, not stored: balances and settlements are Vue `computed`
-values, so adding, removing or renaming anything recomputes the plan. A cached
-copy would keep displaying payments for expenses that no longer exist.
-
-## Worked examples
-
-### Weekend trip — 4 people
-
-| Expense | Payer | Amount |
-|---|---|---|
-| Accommodation | Alice | €120 |
-| Dinner | Bob | €80 |
-| Breakfast | Charlie | €40 |
-| Gas | David | €60 |
-
-Total €300, €75 each.
-
-```
-Alice   +45      Charlie  -35
-Bob      +5      David    -15
-```
-
-Pass 1 finds no exact pair. Pass 2:
-
-```
-Charlie → Alice  €35      (Charlie settled, Alice still owed €10)
-David   → Alice  €10      (Alice settled, David still owes €5)
-David   → Bob     €5      (both settled)
-```
-
-**3 transfers** — optimal.
-
-### Where exact pairing wins
-
-```
-A -1.00   B -3.00   C -4.00   D +3.00   E +5.00
-```
-
-Plain greedy sorts to debtors `[4, 3, 1]`, creditors `[5, 3]` and produces
-**four** transfers. Exact pairing spots `B(-3) ↔ D(+3)` first, leaving
-`[4, 1]` against `[5]`:
-
-```
-B → D  €3
-C → E  €4
-A → E  €1
-```
-
-**3 transfers** — optimal.
-
-### Awkward split — €10 among 3
-
-```
-shares  [334, 333, 333]   (sum 1000, exact)
-A +6.66   B -3.33   C -3.33
-B → A  €3.33
-C → A  €3.33
-```
-
-A receives €6.66, exactly what A is owed. Nothing evaporates.
-
-### Uneven group — 5 people
-
-```
-A +60   B -40   C +10   D -40   E +10
-```
-
-No zero-sum subgroup exists here, so **4 transfers** is genuinely the minimum —
-not a failure of the heuristic.
+values, so adding, removing or renaming anything recomputes the plan.
 
 ---
 

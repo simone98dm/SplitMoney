@@ -76,7 +76,35 @@ describe("BalanceHeader", () => {
     const wrapper = mount(BalanceHeader);
 
     expect(wrapper.text()).toContain("Siete in pari");
-    expect(wrapper.text()).toContain("Nessun pagamento da fare");
+    expect(wrapper.text()).toContain("Nessuno deve più niente");
+  });
+
+  it("tells you whom to pay, not just how much", () => {
+    const { participantsStore } = setup();
+    participantsStore.setMe("Bob");
+    const text = mount(BalanceHeader).text().replace(/\s+/g, " ");
+
+    expect(text).toContain("devi dare a Alice");
+  });
+
+  it("ends the event once every payment is marked done", async () => {
+    const { participantsStore, splitterStore } = setup();
+    participantsStore.setMe("Bob");
+    const wrapper = mount(BalanceHeader);
+
+    splitterStore.recordPayment(splitterStore.settlements[0]!);
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.text()).toContain("Siete in pari");
+  });
+
+  it("does not claim you are square before anything was spent", () => {
+    const { participantsStore } = setup(["Alice", "Bob"], false);
+    participantsStore.setMe("Alice");
+    const text = mount(BalanceHeader).text();
+
+    expect(text).toContain("nessuna spesa ancora");
+    expect(text).not.toContain("sei in pari");
   });
 
   it("remembers who you are across a reload", () => {

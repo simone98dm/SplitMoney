@@ -1,9 +1,12 @@
 <template>
   <section aria-labelledby="people-heading">
     <div class="flex items-baseline justify-between gap-3">
-      <h2 id="people-heading" class="text-xl font-semibold">Le persone</h2>
-      <p class="tnum text-sm text-ink-muted">
+      <h2 id="people-heading" class="text-xl font-semibold">
+        {{ hasGroup ? "Le persone" : "Chi c'era?" }}
+      </h2>
+      <p v-if="participants.length" class="tnum text-sm text-ink-muted">
         {{ participants.length }}
+        {{ participants.length === 1 ? "persona" : "persone" }}
       </p>
     </div>
 
@@ -15,8 +18,12 @@
       />
     </ul>
 
-    <p v-else class="mt-2 text-sm text-ink-muted">
-      Aggiungi chi ha partecipato alla spesa. Servono almeno due persone.
+    <p v-if="!hasGroup" class="mt-2 text-base text-ink-muted">
+      {{
+        participants.length
+          ? "Aggiungi almeno un'altra persona per iniziare a dividere."
+          : "Scrivi i nomi di chi divide il conto, uno alla volta. Anche il tuo."
+      }}
     </p>
 
     <form class="mt-4 flex gap-2" @submit.prevent="add">
@@ -26,8 +33,10 @@
           id="new-participant"
           v-model="newParticipant"
           class="field"
-          placeholder="Aggiungi una persona"
+          :placeholder="participants.length ? 'Un altro nome' : 'Il primo nome'"
           maxlength="20"
+          autocomplete="off"
+          :autofocus="!hasGroup"
           :aria-invalid="Boolean(participantError)"
           :aria-describedby="participantError ? 'participant-error' : undefined"
         />
@@ -38,8 +47,9 @@
       </button>
     </form>
 
+    <!-- a rename error belongs under the rename field, in its row -->
     <p
-      v-if="participantError"
+      v-if="participantError && !editingParticipant"
       id="participant-error"
       role="alert"
       class="mt-2 text-sm text-danger"
@@ -53,11 +63,19 @@
 import { storeToRefs } from "pinia";
 import ParticipantRow from "~/components/participant/ParticipantRow.vue";
 import IconPlus from "~/components/ui/IconPlus.vue";
-import { useParticipantsStore } from "~/store/participant";
+import { computed } from "vue";
+import { MIN_GROUP_SIZE, useParticipantsStore } from "~/store/participant";
 
 const participantsStore = useParticipantsStore();
-const { participants, sortedParticipants, newParticipant, participantError } =
-  storeToRefs(participantsStore);
+const {
+  participants,
+  sortedParticipants,
+  newParticipant,
+  participantError,
+  editingParticipant,
+} = storeToRefs(participantsStore);
+
+const hasGroup = computed(() => participants.value.length >= MIN_GROUP_SIZE);
 
 const add = () => participantsStore.addParticipant();
 </script>

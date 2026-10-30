@@ -132,7 +132,7 @@ describe("ExpenseSplitter Store", () => {
       const { store } = setup();
       addExpense(store, "Alice", "100");
 
-      expect(store.settlements).toEqual([
+      expect(store.settlements).toMatchObject([
         { from: "Bob", to: "Alice", amount: 50 },
       ]);
     });
@@ -142,7 +142,7 @@ describe("ExpenseSplitter Store", () => {
       addExpense(store, "Alice", "100");
       addExpense(store, "Bob", "60");
 
-      expect(store.settlements).toEqual([
+      expect(store.settlements).toMatchObject([
         { from: "Bob", to: "Alice", amount: 20 },
       ]);
     });
@@ -154,25 +154,25 @@ describe("ExpenseSplitter Store", () => {
 
       store.removeExpense(store.expenses[1].id);
 
-      expect(store.settlements).toEqual([
+      expect(store.settlements).toMatchObject([
         { from: "Bob", to: "Alice", amount: 50 },
       ]);
     });
 
-    it("should not lose a cent on an amount that does not divide evenly", () => {
+    it("should split an uneven amount in exact fractions, rounding only for display", () => {
       const { store } = setup(["A", "B", "C"]);
       addExpense(store, "A", "10");
 
-      const received = store.settlements
-        .filter((t) => t.to === "A")
-        .reduce((sum, t) => sum + Math.round(t.amount * 100), 0);
-
-      // A is owed 1000 minus their own share, and gets every cent of it back
-      expect(received).toBe(Math.round(store.balances["A"] * 100));
-      expect([666, 667]).toContain(received);
+      // the engine splits 10 / 3 unrounded; balances come from the rounded
+      // transfers so the header and the plan agree to the cent
+      expect(store.balances).toEqual({ A: 6.66, B: -3.33, C: -3.33 });
+      expect(store.settlements).toMatchObject([
+        { from: "B", to: "A", amount: 3.33 },
+        { from: "C", to: "A", amount: 3.33 },
+      ]);
     });
 
-    it("should keep the whole balance sheet at exactly zero", () => {
+    it("should keep the whole balance sheet within a cent per person of zero", () => {
       const { store } = setup(["A", "B", "C"]);
       addExpense(store, "A", "10");
       addExpense(store, "B", "7.77");
@@ -194,11 +194,9 @@ describe("ExpenseSplitter Store", () => {
       participantStore.removeParticipant("C");
 
       expect(store.balances["C"]).toBe(-10);
-      expect(store.settlements).toContainEqual({
-        from: "C",
-        to: "A",
-        amount: 10,
-      });
+      expect(store.settlements).toContainEqual(
+        expect.objectContaining({ from: "C", to: "A", amount: 10 })
+      );
     });
   });
 
@@ -263,7 +261,7 @@ describe("ExpenseSplitter Store", () => {
       rename(store, participantStore, "Alice", "Alicia");
 
       expect(store.balances).toEqual({ Alicia: 50, Bob: -50 });
-      expect(store.settlements).toEqual([
+      expect(store.settlements).toMatchObject([
         { from: "Bob", to: "Alicia", amount: 50 },
       ]);
     });
@@ -433,6 +431,136 @@ describe("ExpenseSplitter Store", () => {
       participantStore.participants = ["Alice", "Bob", "Carol"];
 
       expect(store.balances).toEqual({ Alice: 50, Bob: -50, Carol: 0 });
+    });
+  });
+
+  describe("Balances agree with the plan", () => {
+    it("matches every balance to the signed sum of that person's payments", () => {
+      const { store } = setup(["A", "B", "C", "D"]);
+      addExpense(store, "A", "37,51");
+      addExpense(store, "B", "12,50");
+      addExpense(store, "C", "90,07");
+
+      for (const [person, balance] of Object.entries(store.balances)) {
+        const fromPlan = store.settlements.reduce(
+          (sum, t) =>
+            sum +
+            (t.to === person ? Math.round(t.amount * 100) : 0) -
+            (t.from === person ? Math.round(t.amount * 100) : 0),
+          0
+        );
+        expect(Math.round(balance * 100)).toBe(fromPlan);
+      }
+    });
+  });
+
+  describe("Recording payments", () => {
+    it("reaches exactly zero when every suggested payment is marked done", () => {
+      const { store } = setup(["A", "B", "C"]);
+      addExpense(store, "A", "10");
+
+      // 10 / 3 does not divide: the exact amounts must leave no crumbs behind
+      for (const transfer of [...store.settlements]) store.recordPayment(transfer);
+
+      expect(store.settlements).toEqual([]);
+      expect(Object.values(store.balances)).toEqual([0, 0, 0]);
+    });
+
+    it("does not count payments as spending", () => {
+      const { store } = setup();
+      addExpense(store, "Alice", "100");
+      store.recordPayment(store.settlements[0]!);
+
+      expect(store.totalExpenses).toBe(100);
+      expect(store.hasExpenses).toBe(true);
+    });
+
+    it("rejects a stored payment to more than one person or to yourself", () => {
+      localStorage.setItem(
+        "expenses",
+        JSON.stringify([
+          { id: "1", kind: "payment", payer: "A", amount: 5, description: "", participants: ["B", "C"], timestamp: 1 },
+          { id: "2", kind: "payment", payer: "A", amount: 5, description: "", participants: ["A"], timestamp: 1 },
+          { id: "3", kind: "payment", payer: "A", amount: 5, description: "", participants: ["B"], timestamp: 1 },
+        ])
+      );
+
+      expect(setup(["A", "B", "C"]).store.expenses.map((e) => e.id)).toEqual(["3"]);
+    });
+  });
+
+  describe("Undo", () => {
+    it("puts a deleted expense back", () => {
+      const { store } = setup();
+      addExpense(store, "Alice", "30", "Pizza");
+      const [pizza] = store.expenses;
+
+      store.removeExpense(pizza!.id);
+      expect(store.expenses).toEqual([]);
+      expect(store.lastAction?.message).toContain("Pizza");
+
+      store.undoLastAction();
+      expect(store.expenses).toEqual([pizza]);
+      expect(store.lastAction).toBeNull();
+    });
+
+    it("takes back a payment marked done by mistake", () => {
+      const { store } = setup();
+      addExpense(store, "Alice", "100");
+      store.recordPayment(store.settlements[0]!);
+      expect(store.settlements).toEqual([]);
+
+      store.undoLastAction();
+      expect(store.settlements).toHaveLength(1);
+    });
+  });
+
+  describe("Amount input", () => {
+    it("accepts the comma an Italian keyboard types", () => {
+      const { store } = setup();
+      expect(addExpense(store, "Alice", "12,50")).toBe(true);
+      expect(store.expenses[0]!.amount).toBe(12.5);
+    });
+  });
+
+  describe("Default payer", () => {
+    it("keeps the last payer for the next expense", () => {
+      const { store } = setup(["Alice", "Bob"]);
+      addExpense(store, "Bob", "10");
+      expect(store.newExpense.payer).toBe("Bob");
+    });
+
+    it("starts from the person holding the phone", () => {
+      const { participantStore } = setup(["Alice", "Bob"]);
+      participantStore.setMe("Bob");
+      setActivePinia(createPinia());
+      const fresh = setup(["Alice", "Bob"]);
+      expect(fresh.store.newExpense.payer).toBe("Bob");
+    });
+  });
+
+  describe("startNewEvent", () => {
+    it("clears the expenses but keeps the people when asked", () => {
+      const { store, participantStore } = setup();
+      addExpense(store, "Alice", "10");
+
+      store.startNewEvent({ keepPeople: true });
+
+      expect(store.expenses).toEqual([]);
+      expect(participantStore.participants).toEqual(["Alice", "Bob"]);
+    });
+
+    it("clears people and identity when starting from scratch", () => {
+      const { store, participantStore } = setup();
+      participantStore.setMe("Alice");
+      addExpense(store, "Alice", "10");
+
+      store.startNewEvent({ keepPeople: false });
+
+      expect(store.expenses).toEqual([]);
+      expect(participantStore.participants).toEqual([]);
+      expect(participantStore.me).toBeNull();
+      expect(store.lastAction).toBeNull();
     });
   });
 });

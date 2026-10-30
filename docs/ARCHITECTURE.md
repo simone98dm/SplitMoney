@@ -181,9 +181,9 @@ Static assets:
                     ▼
 ┌──────────────────────────────────────────┐
 │  Pure modules (no Vue, no Pinia)         │
-│  - store/money.ts       integer cents    │
-│  - store/balance.ts     balance sheet    │
-│  - store/settlement.ts  payment plan     │
+│  - store/money.ts       formatting       │
+│  - store/split.ts       engine bridge    │
+│  - lib/split-engine/    split + settle   │
 │  - store/storage.ts     vetted I/O       │
 └──────────────────────────────────────────┘
 ```

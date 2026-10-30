@@ -27,3 +27,4 @@ logs
 !.env.example
 
 .claude-flow
+.impeccable

@@ -6,7 +6,7 @@ export default defineConfig({
   plugins: [vue()],
   test: {
     environment: "happy-dom",
-    include: ["./store/**/*.test.ts", "./components/**/*.test.ts"],
+    include: ["./store/**/*.test.ts", "./components/**/*.test.ts", "./lib/**/*.test.ts"],
   },
   resolve: {
     alias: {

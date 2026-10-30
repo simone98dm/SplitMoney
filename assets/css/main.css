@@ -144,8 +144,11 @@
   }
 
   /* hover:bg-white would have gone white-on-pale in the light theme */
+  /* disabled is a quiet surface, not a 40%-opacity slab that looks broken */
   .btn-primary {
-    @apply btn bg-ink text-bg hover:bg-ink-hover disabled:hover:bg-ink;
+    @apply btn bg-ink text-bg hover:bg-ink-hover
+           disabled:bg-surface-high disabled:text-ink-muted disabled:opacity-100
+           disabled:hover:bg-surface-high;
   }
 
   .btn-ghost {
@@ -171,9 +174,90 @@
            focus:border-ink;
   }
 
-  /* small all-caps label; capitals need the extra tracking to breathe */
-  .eyebrow {
-    @apply text-2xs font-semibold uppercase text-ink-muted;
+  /* the amount is the one field that matters: it is typed at figure size */
+  .field-figure {
+    @apply min-h-[56px] text-figure font-semibold;
+  }
+
+  /* a radio styled as a button: one tap picks the payer */
+  .chip {
+    @apply inline-flex min-h-[44px] cursor-pointer items-center rounded
+           border border-line-strong px-4 text-base text-ink
+           transition-colors duration-150 ease-out hover:bg-surface-high;
+  }
+
+  .chip:has(input:checked) {
+    @apply border-ink bg-ink text-bg hover:bg-ink-hover;
+  }
+
+  .chip:has(input:checked) .text-ink-muted {
+    color: inherit;
+  }
+
+  .chip:has(input:focus-visible) {
+    outline: 2px solid var(--ink);
+    outline-offset: 2px;
+  }
+
+  /*
+   * Bottom sheet on a native <dialog>: under the thumb on a phone, a centred
+   * panel on wider screens. Elevation is the surface step plus a hairline,
+   * no shadow — on the dark ground a shadow would not read anyway.
+   */
+  .sheet {
+    margin: auto auto 0;
+    width: 100%;
+    max-width: 42rem;
+    max-height: calc(100dvh - 1.5rem);
+    padding: 0;
+    border: 1px solid var(--line);
+    border-bottom: 0;
+    border-radius: 1rem 1rem 0 0;
+    background: var(--surface);
+    color: var(--ink);
+  }
+
+  .sheet::backdrop {
+    background: oklch(0.12 0.02 145 / 0.65);
+  }
+
+  .sheet[open] {
+    animation: sheet-in var(--duration-base) var(--ease-out-quint);
+  }
+
+  @keyframes sheet-in {
+    from {
+      transform: translateY(1.5rem);
+      opacity: 0;
+    }
+  }
+
+  .sheet-body {
+    padding: 1rem 1rem calc(1.25rem + env(safe-area-inset-bottom));
+  }
+
+  @media (min-width: 640px) {
+    .sheet {
+      margin: auto;
+      border-bottom: 1px solid var(--line);
+      border-radius: 0.875rem;
+    }
+
+    .sheet-body {
+      padding: 1.5rem;
+    }
+  }
+
+  .toast {
+    @apply rounded-panel bg-surface-high px-4 py-1 text-ink;
+    box-shadow: 0 8px 24px -10px oklch(0 0 0 / 0.5);
+  }
+
+  /* the layer's footer, brought into this palette and type */
+  .app-footer {
+    --app-footer-line: var(--line);
+    --app-footer-ink: var(--ink);
+    --app-footer-ink-muted: var(--ink-muted);
   }
 
   /*

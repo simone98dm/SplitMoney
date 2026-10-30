@@ -2,13 +2,16 @@ import type { Expense, ParticipantStats } from "~/types";
 import { ref, computed } from "vue";
 import { defineStore } from "pinia";
 import { toCents, toEuro } from "~/store/money";
-import { sharesForExpense } from "~/store/balance";
+import { shareOf } from "~/store/split";
 import { parseNameList, readStored, writeStored } from "~/store/storage";
 
 const STORAGE_KEY = "participants";
 const ME_STORAGE_KEY = "me";
-const DEFAULT_PARTICIPANTS = ["Simone", "Gennaro", "Michele"];
+// every visit is a first visit: start empty rather than with someone else's dinner
+const DEFAULT_PARTICIPANTS: string[] = [];
 const MAX_NAME_LENGTH = 20;
+/** Nothing can be split with fewer people than this. */
+export const MIN_GROUP_SIZE = 2;
 
 export interface ParticipantRename {
   from: string;
@@ -172,9 +175,19 @@ export const useParticipantsStore = defineStore("participants", () => {
     persist();
   };
 
+  /** "Nuovo evento, da zero": nobody left, so nobody to be either. */
+  const resetRoster = () => {
+    participants.value = [];
+    editingParticipant.value = null;
+    showRemoveConfirm.value = null;
+    participantError.value = "";
+    clearMe();
+    persist();
+  };
+
   /**
-   * Uses each expense's own participant snapshot and the same cent split as
-   * the settlement, so netBalance always matches the settlement plan.
+   * Uses each expense's own participant snapshot and the split engine's
+   * shares, so netBalance always matches the settlement plan.
    */
   const calculateParticipantStats = (
     participant: string,
@@ -187,11 +200,9 @@ export const useParticipantsStore = defineStore("participants", () => {
     );
 
     // the payer owes their own share too — leaving it out overstates their credit
-    const owedCents = expenses.reduce((sum, expense) => {
-      const index = expense.participants.indexOf(participant);
-      if (index === -1) return sum;
-      return sum + sharesForExpense(expense)[index];
-    }, 0);
+    const owedCents = toCents(
+      expenses.reduce((sum, expense) => sum + shareOf(expense, participant), 0),
+    );
 
     return {
       totalPaid: toEuro(paidCents),
@@ -225,6 +236,7 @@ export const useParticipantsStore = defineStore("participants", () => {
     confirmRemove,
     cancelRemove,
     removeParticipant,
+    resetRoster,
     calculateParticipantStats,
   };
 });
